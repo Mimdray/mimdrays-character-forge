@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- This line makes the page fit phone screens -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Character Forge</title>
+  <!-- Loads the Supabase library, which talks to your database -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root { --bg:#f6f3ee; --card:#ffffff; --ink:#222; --muted:#666; --accent:#8b3a2b; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+    main { max-width: 640px; margin: 0 auto; padding: 16px; }
+    h1 { color: var(--accent); }
+    .card { background:var(--card); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+    label { display:block; font-size:.9rem; margin-top:10px; color:var(--muted); }
+    input, textarea { width:100%; padding:10px; font-size:16px; border:1px solid #ccc; border-radius:8px; margin-top:4px; }
+    .stats { display:grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    button { margin-top:12px; padding:10px 16px; font-size:16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+    button.secondary { background:#ddd; color:var(--ink); }
+    .hidden { display:none; }
+    .msg { color: var(--accent); min-height: 1.2em; }
+    .char h3 { margin:0 0 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Character Forge</h1>
+
+  <!-- Screen 1: login / sign up -->
+  <section id="auth" class="card">
+    <h2>Log in or sign up</h2>
+    <label>Email <input id="email" type="email" autocomplete="email"></label>
+    <label>Password (min. 6 characters) <input id="password" type="password" autocomplete="current-password"></label>
+    <button id="signin">Log in</button>
+    <button id="signup" class="secondary">Sign up</button>
+    <p id="authMsg" class="msg"></p>
+  </section>
+
+  <!-- Screen 2: the actual app (hidden until logged in) -->
+  <section id="app" class="hidden">
+    <div class="card">
+      Logged in as <b id="who"></b>
+      <button id="signout" class="secondary">Log out</button>
+    </div>
+
+    <form id="charForm" class="card">
+      <h2>New character</h2>
+      <label>Name <input name="name" required></label>
+      <label>Race <input name="race"></label>
+      <label>Class <input name="char_class"></label>
+      <label>Level <input name="level" type="number" min="1" value="1"></label>
+      <div class="stats">
+        <label>STR <input name="strength" type="number" value="10"></label>
+        <label>DEX <input name="dexterity" type="number" value="10"></label>
+        <label>CON <input name="constitution" type="number" value="10"></label>
+        <label>INT <input name="intelligence" type="number" value="10"></label>
+        <label>WIS <input name="wisdom" type="number" value="10"></label>
+        <label>CHA <input name="charisma" type="number" value="10"></label>
+      </div>
+      <label>Backstory <textarea name="backstory" rows="4"></textarea></label>
+      <button type="submit">Save character</button>
+      <p id="formMsg" class="msg"></p>
+    </form>
+
+    <div class="card">
+      <h2>My characters</h2>
+      <div id="list"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+  // ⬇️ STEP 4: paste your two values from Supabase here
+  const SUPABASE_URL = "PASTE_YOUR_PROJECT_URL_HERE";
+  const SUPABASE_KEY = "PASTE_YOUR_PUBLISHABLE_KEY_HERE";
+
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  const $ = (id) => document.getElementById(id);
+  const NUMBER_FIELDS = ["level", "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
+
+  // Show the login screen or the app, depending on whether someone is logged in
+  async function showScreen() {
+    const { data: { session } } = await db.auth.getSession();
+    $("auth").classList.toggle("hidden", !!session);
+    $("app").classList.toggle("hidden", !session);
+    if (session) {
+      $("who").textContent = session.user.email;
+      loadCharacters();
+    }
+  }
+
+  $("signup").onclick = async () => {
+    const { error } = await db.auth.signUp({ email: $("email").value, password: $("password").value });
+    $("authMsg").textContent = error
+      ? error.message
+      : "Account created! If email confirmation is on, click the link in your inbox, then log in.";
+    showScreen();
+  };
+
+  $("signin").onclick = async () => {
+    const { error } = await db.auth.signInWithPassword({ email: $("email").value, password: $("password").value });
+    if (error) $("authMsg").textContent = error.message;
+    else showScreen();
+  };
+
+  $("signout").onclick = async () => {
+    await db.auth.signOut();
+    showScreen();
+  };
+
+  // Save a new character to the database
+  $("charForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const character = Object.fromEntries(new FormData(event.target));
+    for (const field of NUMBER_FIELDS) {
+      character[field] = character[field] === "" ? null : Number(character[field]);
+    }
+    const { error } = await db.from("characters").insert(character);
+    if (error) { $("formMsg").textContent = error.message; return; }
+    $("formMsg").textContent = "Saved!";
+    event.target.reset();
+    loadCharacters();
+  };
+
+  // Load this user's characters and show them as cards
+  async function loadCharacters() {
+    const list = $("list");
+    const { data, error } = await db.from("characters").select("*").order("created_at", { ascending: false });
+    list.innerHTML = "";
+    if (error) { list.textContent = error.message; return; }
+    if (data.length === 0) { list.textContent = "No characters yet."; return; }
+
+    for (const c of data) {
+      const card = document.createElement("div");
+      card.className = "char card";
+
+      const title = document.createElement("h3");
+      title.textContent = `${c.name} (Level ${c.level ?? "?"})`;
+
+      const info = document.createElement("p");
+      info.textContent = [c.race, c.char_class].filter(Boolean).join(" · ") +
+        ` | STR ${c.strength} DEX ${c.dexterity} CON ${c.constitution} INT ${c.intelligence} WIS ${c.wisdom} CHA ${c.charisma}`;
+
+      const story = document.createElement("p");
+      story.textContent = c.backstory || "";
+
+      const del = document.createElement("button");
+      del.className = "secondary";
+      del.textContent = "Delete";
+      del.onclick = async () => {
+        if (!confirm(`Delete ${c.name}?`)) return;
+        await db.from("characters").delete().eq("id", c.id);
+        loadCharacters();
+      };
+
+      card.append(title, info, story, del);
+      list.append(card);
+    }
+  }
+
+  showScreen();
+</script>
+</body>
+</html>
