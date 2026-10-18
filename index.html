@@ -12,23 +12,33 @@
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
     main { max-width: 640px; margin: 0 auto; padding: 16px; }
-    h1 { color: var(--accent); }
+    h1 { color: var(--accent); margin-bottom: 8px; }
     .card { background:var(--card); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
     label { display:block; font-size:.9rem; margin-top:10px; color:var(--muted); }
     input, textarea { width:100%; padding:10px; font-size:16px; border:1px solid #ccc; border-radius:8px; margin-top:4px; }
     .stats { display:grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     button { margin-top:12px; padding:10px 16px; font-size:16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
     button.secondary { background:#ddd; color:var(--ink); }
-    .hidden { display:none; }
+    .hidden { display:none !important; }
     .msg { color: var(--accent); min-height: 1.2em; }
     .char h3 { margin:0 0 4px; }
+
+    /* Top bar shown after login */
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:16px; color:var(--muted); font-size:.9rem; }
+    .topbar button { margin-top:0; padding:6px 12px; font-size:14px; }
+
+    /* Editor choice cards */
+    .editor-choice { display:block; width:100%; text-align:left; background:var(--card); color:var(--ink); margin:0 0 12px; padding:16px; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,.08); border:2px solid transparent; }
+    .editor-choice:hover, .editor-choice:focus { border-color: var(--accent); }
+    .editor-choice strong { display:block; font-size:1.1rem; color:var(--accent); }
+    .editor-choice span { color:var(--muted); font-size:.95rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>Character Forge</h1>
 
-  <!-- Screen 1: login / sign up -->
+  <!-- ===== Screen 1: login / sign up ===== -->
   <section id="auth" class="card">
     <h2>Log in or sign up</h2>
     <label>Email <input id="email" type="email" autocomplete="email"></label>
@@ -38,15 +48,28 @@
     <p id="authMsg" class="msg"></p>
   </section>
 
-  <!-- Screen 2: the actual app (hidden until logged in) -->
-  <section id="app" class="hidden">
-    <div class="card">
-      Logged in as <b id="who"></b>
-      <button id="signout" class="secondary">Log out</button>
-    </div>
+  <!-- Top bar, visible on every screen after login -->
+  <div id="topbar" class="topbar hidden">
+    <span>Logged in as <b id="who"></b></span>
+    <button id="signout" class="secondary">Log out</button>
+  </div>
 
-    <form id="charForm" class="card">
-      <h2>New character</h2>
+  <!-- ===== Screen 2: choose an editor ===== -->
+  <section id="picker" class="hidden">
+    <h2>Choose a character editor</h2>
+    <!-- The buttons are created automatically from the EDITORS list in the script -->
+    <div id="editorList"></div>
+  </section>
+
+  <!-- ===== Screen 3: the editors =====
+       Each editor is one <section class="editor" data-editor="ID">.
+       To add a new editor later: copy this whole section, give it a new
+       data-editor ID, change the fields, and add an entry to EDITORS below. -->
+  <section class="editor hidden" data-editor="basic">
+    <button class="secondary back">← All editors</button>
+
+    <form class="charForm card">
+      <h2>New character – Basic Fantasy</h2>
       <label>Name <input name="name" required></label>
       <label>Race <input name="race"></label>
       <label>Class <input name="char_class"></label>
@@ -61,35 +84,84 @@
       </div>
       <label>Backstory <textarea name="backstory" rows="4"></textarea></label>
       <button type="submit">Save character</button>
-      <p id="formMsg" class="msg"></p>
+      <p class="formMsg msg"></p>
     </form>
 
     <div class="card">
-      <h2>My characters</h2>
-      <div id="list"></div>
+      <h2>My Basic Fantasy characters</h2>
+      <div class="list"></div>
     </div>
   </section>
 </main>
 
 <script>
+  // ⬇️ Your two values from Supabase
   const SUPABASE_URL = "https://fqkpcmwrtqgziqraaiut.supabase.co";
   const SUPABASE_KEY = "sb_publishable_zIzHSrnLq-f4vRVc4W4IEQ_GIvRPJsZ";
 
   const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   const $ = (id) => document.getElementById(id);
-  const NUMBER_FIELDS = ["level", "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
 
-  // Show the login screen or the app, depending on whether someone is logged in
+  // ===== The list of editors =====
+  // id:          must match data-editor="..." in the HTML above, and is saved
+  //              in the database's "system" column so each editor only shows its own characters
+  // numbers:     form fields that should be saved as numbers instead of text
+  // describe:    how one saved character is summarised in the list
+  const EDITORS = [
+    {
+      id: "basic",
+      name: "Basic Fantasy",
+      description: "Name, race, class, level, six attributes and a backstory.",
+      numbers: ["level", "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"],
+      describe: (c) =>
+        [c.race, c.char_class].filter(Boolean).join(" · ") +
+        ` | STR ${c.strength} DEX ${c.dexterity} CON ${c.constitution} INT ${c.intelligence} WIS ${c.wisdom} CHA ${c.charisma}`,
+    },
+    // Future editors go here, for example:
+    // { id: "scifi", name: "Sci-Fi", description: "…", numbers: [...], describe: (c) => "…" },
+  ];
+
+  // ===== Navigation =====
+  // The address bar remembers where you are: …/#basic opens the Basic editor.
+  // This makes the phone's back button and page reloads behave as expected.
   async function showScreen() {
     const { data: { session } } = await db.auth.getSession();
+    const editorId = location.hash.slice(1);
+    const editor = EDITORS.find((e) => e.id === editorId);
+
     $("auth").classList.toggle("hidden", !!session);
-    $("app").classList.toggle("hidden", !session);
+    $("topbar").classList.toggle("hidden", !session);
+    $("picker").classList.toggle("hidden", !session || !!editor);
+    document.querySelectorAll(".editor").forEach((section) => {
+      section.classList.toggle("hidden", !session || section.dataset.editor !== editorId);
+    });
+
     if (session) {
       $("who").textContent = session.user.email;
-      loadCharacters();
+      if (editor) loadCharacters(editor);
     }
   }
+  window.addEventListener("hashchange", showScreen);
 
+  // Build one button per editor on the choice screen
+  for (const editor of EDITORS) {
+    const button = document.createElement("button");
+    button.className = "editor-choice";
+    const title = document.createElement("strong");
+    title.textContent = editor.name;
+    const text = document.createElement("span");
+    text.textContent = editor.description;
+    button.append(title, text);
+    button.onclick = () => { location.hash = editor.id; };
+    $("editorList").append(button);
+  }
+
+  // "← All editors" buttons
+  document.querySelectorAll(".back").forEach((button) => {
+    button.onclick = () => { location.hash = ""; };
+  });
+
+  // ===== Login =====
   $("signup").onclick = async () => {
     const { error } = await db.auth.signUp({ email: $("email").value, password: $("password").value });
     $("authMsg").textContent = error
@@ -106,27 +178,40 @@
 
   $("signout").onclick = async () => {
     await db.auth.signOut();
+    location.hash = "";
     showScreen();
   };
 
-  // Save a new character to the database
-  $("charForm").onsubmit = async (event) => {
-    event.preventDefault();
-    const character = Object.fromEntries(new FormData(event.target));
-    for (const field of NUMBER_FIELDS) {
-      character[field] = character[field] === "" ? null : Number(character[field]);
-    }
-    const { error } = await db.from("characters").insert(character);
-    if (error) { $("formMsg").textContent = error.message; return; }
-    $("formMsg").textContent = "Saved!";
-    event.target.reset();
-    loadCharacters();
-  };
+  // ===== Saving characters (works for every editor) =====
+  for (const editor of EDITORS) {
+    const section = document.querySelector(`.editor[data-editor="${editor.id}"]`);
+    const form = section.querySelector(".charForm");
+    const msg = section.querySelector(".formMsg");
 
-  // Load this user's characters and show them as cards
-  async function loadCharacters() {
-    const list = $("list");
-    const { data, error } = await db.from("characters").select("*").order("created_at", { ascending: false });
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const character = Object.fromEntries(new FormData(form));
+      for (const field of editor.numbers) {
+        character[field] = character[field] === "" ? null : Number(character[field]);
+      }
+      character.system = editor.id; // remember which editor made this character
+      const { error } = await db.from("characters").insert(character);
+      if (error) { msg.textContent = error.message; return; }
+      msg.textContent = "Saved!";
+      form.reset();
+      loadCharacters(editor);
+    };
+  }
+
+  // ===== Showing the saved characters of one editor =====
+  async function loadCharacters(editor) {
+    const list = document.querySelector(`.editor[data-editor="${editor.id}"] .list`);
+    const { data, error } = await db
+      .from("characters")
+      .select("*")
+      .eq("system", editor.id)
+      .order("created_at", { ascending: false });
+
     list.innerHTML = "";
     if (error) { list.textContent = error.message; return; }
     if (data.length === 0) { list.textContent = "No characters yet."; return; }
@@ -139,8 +224,7 @@
       title.textContent = `${c.name} (Level ${c.level ?? "?"})`;
 
       const info = document.createElement("p");
-      info.textContent = [c.race, c.char_class].filter(Boolean).join(" · ") +
-        ` | STR ${c.strength} DEX ${c.dexterity} CON ${c.constitution} INT ${c.intelligence} WIS ${c.wisdom} CHA ${c.charisma}`;
+      info.textContent = editor.describe(c);
 
       const story = document.createElement("p");
       story.textContent = c.backstory || "";
@@ -151,7 +235,7 @@
       del.onclick = async () => {
         if (!confirm(`Delete ${c.name}?`)) return;
         await db.from("characters").delete().eq("id", c.id);
-        loadCharacters();
+        loadCharacters(editor);
       };
 
       card.append(title, info, story, del);
